@@ -1,41 +1,44 @@
 #include <iostream>
-#include <stdlib.h>
 
+// cuBLAS includes
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
-int main() {
-  int N = 1<<20; //1 million
-  float alpha = 1.0; //scalar value for saxpy
-  cublasHandle_t handle;
-  float *x, *y, *d_x, *d_y;
-
-  // Allocate host memory
-  x = (float*)malloc(N * sizeof(x[0]));
-  y = (float*)malloc(N * sizeof(y[0]));
-
-  // initialize x and y vectors on the host
-  for (int i = 0; i < N; i++) {
+// Kernel function to initialize arrays in GPU memory
+__global__
+void init(int n, float *x, float *y)
+{
+  int index = threadIdx.x + blockIdx.x * blockDim.x;
+  int stride = blockDim.x * gridDim.x;
+  for (int i = index; i < n; i += stride) {
     x[i] = 1.0f;
     y[i] = 2.0f;
   }
+}
 
-  // Allocate device memory
-  cudaMalloc((void**)&d_x, N*sizeof(x[0]));
-  cudaMalloc((void**)&d_y, N*sizeof(y[0]));
+int main(void)
+{
+  int N = 1<<20; // 1 Million
+  float *x, *y;
+  float alpha = 1.0; //scalar value for saxpy
+  cublasHandle_t handle;
+
+  // Allocate Unified Memory accessible from CPU or GPU
+  cudaMallocManaged(&x, N*sizeof(float));
+  cudaMallocManaged(&y, N*sizeof(float));
+
+  int blockSize = 256;
+  int numBlocks = (N + blockSize - 1) / blockSize;
+  init<<<numBlocks, blockSize>>>(N, x, y);
 
   // Start cuBLAS code
   cublasCreate(&handle);
 
-  // Copy host vectors to device
-  cublasSetVector(N, sizeof(x[0]), x, 1, d_x, 1);
-  cublasSetVector(N, sizeof(y[0]), y, 1, d_y, 1);
-
   // y = alpha*x + y
-  cublasSaxpy(handle, N, &alpha, d_x, 1, d_y, 1);
+  cublasSaxpy(handle, N, &alpha, x, 1, y, 1);
 
-  // Copy device vector back to host
-  cublasGetVector(N, sizeof(d_y[0]), d_y, 1, y, 1);
+  // Wait for GPU to finish before accessing on host
+  cudaDeviceSynchronize();
 
   // Check for errors (all values should be 3.0f)
   float maxError = 0.0f;
@@ -44,11 +47,11 @@ int main() {
   std::cout << "Max error: " << maxError << std::endl;
 
   // Free memory
-  cudaFree(d_x);
-  cudaFree(d_y);
-  free(x);
-  free(y);
+  cudaFree(x);
+  cudaFree(y);
 
   // End of cuBLAS code
   cublasDestroy(handle);
+
+  return 0;
 }
